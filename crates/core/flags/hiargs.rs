@@ -37,6 +37,7 @@ pub(crate) struct HiArgs {
     binary: BinaryDetection,
     boundary: Option<BoundaryMode>,
     buffer: BufferMode,
+    agent_output_limit: Option<grep::printer::AgentOutputLimit>,
     byte_offset: bool,
     case: CaseMode,
     color: ColorChoice,
@@ -150,6 +151,7 @@ impl HiArgs {
         let types = types(&low)?;
         let globs = globs(&state, &low)?;
         let pre_globs = preprocessor_globs(&state, &low)?;
+        let agent_output_limit = resolve_agent_output_limit(&low)?;
 
         let color = match low.color {
             ColorChoice::Auto if !state.is_terminal_stdout => {
@@ -165,7 +167,9 @@ impl HiArgs {
         };
         let path_terminator = if low.null { Some(b'\x00') } else { None };
         let quit_after_match = stats.is_none() && low.quiet;
-        let threads = if low.sort.is_some() || paths.is_one_file {
+        let threads = if agent_output_limit.is_some() {
+            1
+        } else if low.sort.is_some() || paths.is_one_file {
             1
         } else if let Some(threads) = low.threads {
             threads
@@ -255,6 +259,7 @@ impl HiArgs {
             binary,
             boundary: low.boundary,
             buffer: low.buffer,
+            agent_output_limit,
             byte_offset: low.byte_offset,
             case: low.case,
             color,
@@ -612,6 +617,7 @@ impl HiArgs {
         let mut builder = grep::printer::StandardBuilder::new();
         builder
             .byte_offset(self.byte_offset)
+            .agent_output_limit(self.agent_output_limit)
             .color_specs(self.colors.clone())
             .column(self.column)
             .heading(self.heading)
@@ -916,6 +922,46 @@ impl HiArgs {
         }
         Ok(builder)
     }
+}
+
+fn resolve_agent_output_limit(
+    low: &LowArgs,
+) -> anyhow::Result<Option<grep::printer::AgentOutputLimit>> {
+    if low.agent_output_limit_disabled {
+        return Ok(None);
+    }
+    if !matches!(low.mode, Mode::Search(SearchMode::Standard)) {
+        return Ok(None);
+    }
+
+    const DEFAULT_LIMIT: u64 = 20;
+    const DEFAULT_PREVIEW: u64 = 20;
+
+    let inside_agent = std::env::var_os("INSIDE_AGENT").is_some();
+    let env_limit = env_u64("RG_AGENT_OUTPUT_LIMIT")?;
+    let env_preview = env_u64("RG_AGENT_OUTPUT_PREVIEW_FILE_LIMIT")?;
+    let enabled = inside_agent
+        || low.agent_output_limit.is_some()
+        || env_limit.is_some();
+    if !enabled {
+        return Ok(None);
+    }
+    let limit = low.agent_output_limit.or(env_limit).unwrap_or(DEFAULT_LIMIT);
+    anyhow::ensure!(limit > 0, "agent output limit must be greater than zero");
+    let preview = low
+        .agent_output_preview_file_limit
+        .or(env_preview)
+        .unwrap_or(DEFAULT_PREVIEW);
+    Ok(Some(grep::printer::AgentOutputLimit { limit, preview }))
+}
+
+fn env_u64(name: &str) -> anyhow::Result<Option<u64>> {
+    let Some(value) = std::env::var_os(name) else { return Ok(None) };
+    let value = value.to_string_lossy();
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("{name} must be an unsigned integer"))?;
+    Ok(Some(parsed))
 }
 
 /// State that only needs to be computed once during argument parsing.

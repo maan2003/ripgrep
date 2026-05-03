@@ -67,7 +67,7 @@ pub use crate::{
         HyperlinkFormat, HyperlinkFormatError, hyperlink_aliases,
     },
     path::{PathPrinter, PathPrinterBuilder},
-    standard::{Standard, StandardBuilder, StandardSink},
+    standard::{AgentOutputLimit, Standard, StandardBuilder, StandardSink},
     stats::Stats,
     summary::{Summary, SummaryBuilder, SummaryKind, SummarySink},
 };

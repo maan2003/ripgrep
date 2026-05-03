@@ -143,6 +143,7 @@ fn search(args: &HiArgs, mode: SearchMode) -> anyhow::Result<bool> {
     if args.has_implicit_path() && !searched {
         eprint_nothing_searched();
     }
+    searcher.printer().finish_agent_output_limit()?;
     if let Some(ref stats) = stats {
         let wtr = searcher.printer().get_mut();
         let _ = print_stats(mode, stats, started_at, wtr);

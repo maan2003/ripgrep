@@ -46,6 +46,8 @@ pub(super) const FLAGS: &[&dyn Flag] = &[
     // same category.
     &Regexp,
     &File,
+    &AgentOutputLimit,
+    &AgentOutputPreviewFileLimit,
     &AfterContext,
     &BeforeContext,
     &Binary,
@@ -99,6 +101,7 @@ pub(super) const FLAGS: &[&dyn Flag] = &[
     &Multiline,
     &MultilineDotall,
     &NoConfig,
+    &NoAgentOutputLimit,
     &NoIgnore,
     &NoIgnoreDot,
     &NoIgnoreExclude,
@@ -150,6 +153,105 @@ pub(super) const FLAGS: &[&dyn Flag] = &[
     &NoPcre2Unicode,
     &SortFiles,
 ];
+
+/// --agent-output-limit
+#[derive(Debug)]
+struct AgentOutputLimit;
+
+impl Flag for AgentOutputLimit {
+    fn is_switch(&self) -> bool {
+        false
+    }
+    fn name_long(&self) -> &'static str {
+        "agent-output-limit"
+    }
+    fn doc_variable(&self) -> Option<&'static str> {
+        Some("NUM")
+    }
+    fn doc_category(&self) -> Category {
+        Category::Output
+    }
+    fn doc_short(&self) -> &'static str {
+        r"Limit normal output for agent use."
+    }
+    fn doc_long(&self) -> &'static str {
+        r"
+Limit normal match output to \fINUM\fP matching lines for agent use. When the
+limit is reached, ripgrep suppresses additional matching lines and prints a
+summary telling the caller how to disable the limit.
+.sp
+This option is intended for agent environments where very large match output can
+overwhelm the caller. It only applies to the standard search output mode. It has
+no effect with output modes such as \flag{json}, \flag{count},
+\flag{count-matches} or \flag{files-with-matches}.
+"
+    }
+
+    fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {
+        let limit = convert::u64(&v.unwrap_value())?;
+        anyhow::ensure!(limit > 0, "limit must be greater than zero");
+        args.agent_output_limit = Some(limit);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_agent_output_limit() {
+    let args = parse_low_raw(None::<&str>).unwrap();
+    assert_eq!(None, args.agent_output_limit);
+
+    let args = parse_low_raw(["--agent-output-limit", "20"]).unwrap();
+    assert_eq!(Some(20), args.agent_output_limit);
+
+    let result = parse_low_raw(["--agent-output-limit", "0"]);
+    assert!(result.is_err(), "{result:?}");
+}
+
+/// --agent-output-preview-file-limit
+#[derive(Debug)]
+struct AgentOutputPreviewFileLimit;
+
+impl Flag for AgentOutputPreviewFileLimit {
+    fn is_switch(&self) -> bool {
+        false
+    }
+    fn name_long(&self) -> &'static str {
+        "agent-output-preview-file-limit"
+    }
+    fn doc_variable(&self) -> Option<&'static str> {
+        Some("NUM")
+    }
+    fn doc_category(&self) -> Category {
+        Category::Output
+    }
+    fn doc_short(&self) -> &'static str {
+        r"Set agent summary file count."
+    }
+    fn doc_long(&self) -> &'static str {
+        r"
+Set the number of file-count rows printed in the summary emitted after the
+agent output limit suppresses normal match output.
+"
+    }
+
+    fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {
+        args.agent_output_preview_file_limit =
+            Some(convert::u64(&v.unwrap_value())?);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_agent_output_preview_file_limit() {
+    let args = parse_low_raw(None::<&str>).unwrap();
+    assert_eq!(None, args.agent_output_preview_file_limit);
+
+    let args =
+        parse_low_raw(["--agent-output-preview-file-limit", "5"]).unwrap();
+    assert_eq!(Some(5), args.agent_output_preview_file_limit);
+}
 
 /// -A/--after-context
 #[derive(Debug)]
@@ -4314,6 +4416,47 @@ fn test_no_config() {
 
     let args = parse_low_raw(["--no-config"]).unwrap();
     assert_eq!(true, args.no_config);
+}
+
+/// --no-agent-output-limit
+#[derive(Debug)]
+struct NoAgentOutputLimit;
+
+impl Flag for NoAgentOutputLimit {
+    fn is_switch(&self) -> bool {
+        true
+    }
+    fn name_long(&self) -> &'static str {
+        "no-agent-output-limit"
+    }
+    fn doc_category(&self) -> Category {
+        Category::Output
+    }
+    fn doc_short(&self) -> &'static str {
+        r"Disable agent output limiting."
+    }
+    fn doc_long(&self) -> &'static str {
+        r"
+Disable the agent output limit, even when it would otherwise be enabled by an
+environment variable or by \flag{agent-output-limit}.
+"
+    }
+
+    fn update(&self, v: FlagValue, args: &mut LowArgs) -> anyhow::Result<()> {
+        assert!(v.unwrap_switch(), "--no-agent-output-limit has no negation");
+        args.agent_output_limit_disabled = true;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn test_no_agent_output_limit() {
+    let args = parse_low_raw(None::<&str>).unwrap();
+    assert_eq!(false, args.agent_output_limit_disabled);
+
+    let args = parse_low_raw(["--no-agent-output-limit"]).unwrap();
+    assert_eq!(true, args.agent_output_limit_disabled);
 }
 
 /// --no-ignore

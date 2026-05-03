@@ -319,6 +319,31 @@ rgtest!(f159_max_count_zero, |dir: Dir, mut cmd: TestCommand| {
     cmd.arg("-m0").arg("test").assert_err();
 });
 
+rgtest!(agent_output_limit, |dir: Dir, mut cmd: TestCommand| {
+    dir.create("foo", "test\ntest\ntest\n");
+    dir.create("bar", "test\ntest\n");
+
+    let stdout = cmd
+        .arg("--agent-output-limit=2")
+        .arg("--agent-output-preview-file-limit=10")
+        .arg("--sort=path")
+        .arg("test")
+        .stdout();
+    assert!(stdout.contains("bar:test\nbar:test\n"));
+    assert!(!stdout.contains("foo:test\n"));
+    assert!(
+        stdout.contains(
+            "rg: agent output limit reached after 2 matching lines."
+        )
+    );
+    assert!(stdout.contains(
+        "rg: rerun with --no-agent-output-limit to show full output."
+    ));
+    assert!(stdout.contains("5 matching lines across 2 files"));
+    assert!(stdout.contains("foo: 3"));
+    assert!(stdout.contains("bar: 2"));
+});
+
 // See: https://github.com/BurntSushi/ripgrep/issues/196
 rgtest!(f196_persistent_config, |dir: Dir, mut cmd: TestCommand| {
     dir.create("sherlock", SHERLOCK);

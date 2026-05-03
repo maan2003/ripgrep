@@ -54,6 +54,7 @@ struct Config {
     separator_field_context: Arc<Vec<u8>>,
     separator_path: Option<u8>,
     path_terminator: Option<u8>,
+    agent_output_limit: Option<AgentOutputLimit>,
 }
 
 impl Default for Config {
@@ -79,6 +80,7 @@ impl Default for Config {
             separator_field_context: Arc::new(b"-".to_vec()),
             separator_path: None,
             path_terminator: None,
+            agent_output_limit: None,
         }
     }
 }
@@ -98,6 +100,15 @@ impl Default for Config {
 #[derive(Clone, Debug)]
 pub struct StandardBuilder {
     config: Config,
+}
+
+/// Configuration for limiting normal match output in agent environments.
+#[derive(Clone, Copy, Debug)]
+pub struct AgentOutputLimit {
+    /// The total matching line count that triggers truncation.
+    pub limit: u64,
+    /// The number of file-count rows to print in the truncation summary.
+    pub preview: u64,
 }
 
 impl StandardBuilder {
@@ -129,6 +140,9 @@ impl StandardBuilder {
             config: self.config.clone(),
             wtr: RefCell::new(CounterWriter::new(wtr)),
             matches: vec![],
+            agent_output: AgentOutputState::new(
+                self.config.agent_output_limit,
+            ),
         }
     }
 
@@ -461,6 +475,15 @@ impl StandardBuilder {
         self.config.path_terminator = terminator;
         self
     }
+
+    /// Limit normal match output for agent environments.
+    pub fn agent_output_limit(
+        &mut self,
+        limit: Option<AgentOutputLimit>,
+    ) -> &mut StandardBuilder {
+        self.config.agent_output_limit = limit;
+        self
+    }
 }
 
 /// The standard printer, which implements grep-like formatting, including
@@ -481,6 +504,46 @@ pub struct Standard<W> {
     config: Config,
     wtr: RefCell<CounterWriter<W>>,
     matches: Vec<Match>,
+    agent_output: AgentOutputState,
+}
+
+#[derive(Clone, Debug)]
+struct AgentOutputState {
+    config: Option<AgentOutputLimit>,
+    total: u64,
+    suppressed: bool,
+    files: Vec<(String, u64)>,
+}
+
+impl AgentOutputState {
+    fn new(config: Option<AgentOutputLimit>) -> AgentOutputState {
+        AgentOutputState { config, total: 0, suppressed: false, files: vec![] }
+    }
+
+    fn should_print(&mut self) -> bool {
+        let Some(config) = self.config else { return true };
+        self.total = self.total.saturating_add(1);
+        if self.total > config.limit {
+            self.suppressed = true;
+            return false;
+        }
+        true
+    }
+
+    fn add_file(&mut self, path: Option<&PrinterPath<'_>>, count: u64) {
+        if self.config.is_none() || count == 0 {
+            return;
+        }
+        let path = path
+            .map(|p| p.as_path().display().to_string())
+            .unwrap_or_else(|| "<stdin>".to_string());
+        self.files.push((path, count));
+    }
+
+    fn is_suppressing(&self) -> bool {
+        let Some(config) = self.config else { return false };
+        self.total >= config.limit
+    }
 }
 
 impl<W: WriteColor> Standard<W> {
@@ -610,6 +673,52 @@ impl<W> Standard<W> {
     /// writer.
     pub fn into_inner(self) -> W {
         self.wtr.into_inner().into_inner()
+    }
+}
+
+impl<W: WriteColor> Standard<W> {
+    /// Print the final agent output limit summary, if output was suppressed.
+    pub fn finish_agent_output_limit(&mut self) -> io::Result<()> {
+        let Some(config) = self.agent_output.config else { return Ok(()) };
+        if !self.agent_output.suppressed {
+            return Ok(());
+        }
+        {
+            let mut wtr = self.wtr.borrow_mut();
+            wtr.reset()?;
+            writeln!(wtr)?;
+            writeln!(
+                wtr,
+                "rg: agent output limit reached after {} matching lines.",
+                config.limit,
+            )?;
+            writeln!(
+                wtr,
+                "rg: rerun with --no-agent-output-limit to show full output.",
+            )?;
+            writeln!(wtr)?;
+            writeln!(
+                wtr,
+                "{} matching lines across {} files",
+                self.agent_output.total,
+                self.agent_output.files.len(),
+            )?;
+        }
+        let mut files = self.agent_output.files.clone();
+        files.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (i, (path, count)) in files.iter().enumerate() {
+            if i as u64 >= config.preview {
+                let remaining = files.len() - i;
+                writeln!(
+                    self.wtr.borrow_mut(),
+                    "... {} more files with matches",
+                    remaining,
+                )?;
+                break;
+            }
+            writeln!(self.wtr.borrow_mut(), "{}: {}", path, count)?;
+        }
+        Ok(())
     }
 }
 
@@ -769,6 +878,7 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
         mat: &SinkMatch<'_>,
     ) -> Result<bool, io::Error> {
         self.match_count += 1;
+        let should_print = self.standard.agent_output.should_print();
 
         self.record_matches(
             searcher,
@@ -786,7 +896,9 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
                 return Ok(false);
             }
         }
-        StandardImpl::from_match(searcher, self, mat).sink()?;
+        if should_print {
+            StandardImpl::from_match(searcher, self, mat).sink()?;
+        }
         Ok(true)
     }
 
@@ -807,6 +919,9 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
                 return Ok(false);
             }
         }
+        if self.standard.agent_output.is_suppressing() {
+            return Ok(true);
+        }
 
         StandardImpl::from_context(searcher, self, ctx).sink()?;
         Ok(true)
@@ -816,6 +931,9 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
         &mut self,
         searcher: &Searcher,
     ) -> Result<bool, io::Error> {
+        if self.standard.agent_output.is_suppressing() {
+            return Ok(true);
+        }
         StandardImpl::new(searcher, self).write_context_separator()?;
         Ok(true)
     }
@@ -863,6 +981,9 @@ impl<'p, 's, M: Matcher, W: WriteColor> Sink for StandardSink<'p, 's, M, W> {
             stats.add_bytes_searched(finish.byte_count());
             stats.add_bytes_printed(self.standard.wtr.borrow().count());
         }
+        self.standard
+            .agent_output
+            .add_file(self.path.as_ref(), self.match_count);
         Ok(())
     }
 }

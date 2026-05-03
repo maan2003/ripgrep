@@ -219,6 +219,14 @@ impl<W: WriteColor> Printer<W> {
             Printer::JSON(ref mut p) => p.get_mut(),
         }
     }
+
+    /// Finish any output-limiting behavior that needs a search-wide summary.
+    pub(crate) fn finish_agent_output_limit(&mut self) -> io::Result<()> {
+        match *self {
+            Printer::Standard(ref mut p) => p.finish_agent_output_limit(),
+            Printer::Summary(_) | Printer::JSON(_) => Ok(()),
+        }
+    }
 }
 
 /// A worker for executing searches.
